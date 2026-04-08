@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ida_chat_history import MessageHistory
 
 # Set up debug logging to file
-LOG_FILE = Path("/tmp/ida-chat.log")
+LOG_FILE = Path(tempfile.gettempdir()) / "ida-chat.log"
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
