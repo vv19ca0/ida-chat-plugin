@@ -436,6 +436,54 @@ class MessageHistory:
         """Get the current session ID."""
         return self.session_id
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session file.
+
+        Args:
+            session_id: The session UUID to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        session_file = self.session_dir / f"{session_id}.jsonl"
+        if session_file.exists():
+            session_file.unlink()
+            # Clear current session if it was the deleted one
+            if self.session_id == session_id:
+                self.session_id = None
+                self.session_file = None
+                self._parent_uuid = None
+            return True
+        return False
+
+    def delete_all_sessions(self) -> int:
+        """Delete all sessions for the current binary.
+
+        Returns:
+            Number of sessions deleted.
+        """
+        if not self.session_dir.exists():
+            return 0
+        count = 0
+        for session_file in self.session_dir.glob("*.jsonl"):
+            session_file.unlink()
+            count += 1
+        self.session_id = None
+        self.session_file = None
+        self._parent_uuid = None
+        return count
+
+    def get_latest_session_id(self) -> str | None:
+        """Get the most recent session ID by file modification time.
+
+        Returns:
+            Session UUID of the most recent session, or None.
+        """
+        if not self.session_dir.exists():
+            return None
+        files = sorted(self.session_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return files[0].stem if files else None
+
     def get_all_user_messages(self) -> list[str]:
         """Get all user messages from all sessions for this binary.
 

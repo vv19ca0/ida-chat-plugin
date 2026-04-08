@@ -905,6 +905,163 @@ class TestConnectionWorker(QThread):
             loop.close()
 
 
+class SessionHistoryPanel(QFrame):
+    """Panel for browsing, switching, and deleting historical chat sessions."""
+
+    session_selected = Signal(str)   # session_id
+    session_deleted = Signal(str)    # session_id
+    all_deleted = Signal()
+    back_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history: MessageHistory | None = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        colors = get_ida_colors()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Header row
+        header = QHBoxLayout()
+        back_btn = QPushButton("< Back")
+        back_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors['highlight']};
+                border: none;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ text-decoration: underline; }}
+        """)
+        back_btn.clicked.connect(self.back_requested.emit)
+        header.addWidget(back_btn)
+        header.addStretch()
+
+        title = QLabel("Session History")
+        title.setStyleSheet(f"QLabel {{ color: {colors['window_text']}; font-weight: bold; }}")
+        header.addWidget(title)
+        header.addStretch()
+
+        delete_all_btn = QPushButton("Delete All")
+        delete_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #dc2626;
+                border: none;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ text-decoration: underline; }}
+        """)
+        delete_all_btn.clicked.connect(self._on_delete_all)
+        header.addWidget(delete_all_btn)
+        layout.addLayout(header)
+
+        # Scrollable session list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list_container = QWidget()
+        self._list_layout = QVBoxLayout(self._list_container)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(4)
+        self._list_layout.addStretch(1)
+        scroll.setWidget(self._list_container)
+        layout.addWidget(scroll, 1)
+
+    def set_history(self, history: MessageHistory):
+        self._history = history
+
+    def refresh(self):
+        """Reload session list from disk."""
+        # Clear existing items (keep stretch at end)
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._history:
+            return
+
+        sessions = self._history.list_sessions()
+        colors = get_ida_colors()
+
+        if not sessions:
+            empty = QLabel("No history yet.")
+            empty.setStyleSheet(f"QLabel {{ color: {colors['mid']}; }}")
+            empty.setAlignment(Qt.AlignmentFlag(Qt.AlignCenter.value))
+            self._list_layout.insertWidget(0, empty)
+            return
+
+        for i, sess in enumerate(sessions):
+            row = QFrame()
+            row.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {colors['alt_base']};
+                    border-radius: 6px;
+                    padding: 4px;
+                }}
+                QFrame:hover {{
+                    background-color: {colors['button']};
+                }}
+            """)
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(8)
+
+            # Info column
+            info = QVBoxLayout()
+            info.setSpacing(2)
+            summary = QLabel(sess["first_message"])
+            summary.setWordWrap(True)
+            summary.setStyleSheet(f"QLabel {{ color: {colors['window_text']}; font-size: 12px; }}")
+            info.addWidget(summary)
+
+            ts = sess.get("timestamp", "")[:19].replace("T", " ")
+            meta = QLabel(f"{ts}  |  {sess['message_count']} messages")
+            meta.setStyleSheet(f"QLabel {{ color: {colors['mid']}; font-size: 10px; }}")
+            info.addWidget(meta)
+            row_layout.addLayout(info, 1)
+
+            # Delete button
+            del_btn = QPushButton("x")
+            del_btn.setFixedSize(20, 20)
+            del_btn.setToolTip("Delete this session")
+            del_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {colors['mid']};
+                    border: none;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ color: #dc2626; }}
+            """)
+            sid = sess["id"]
+            del_btn.clicked.connect(lambda checked=False, s=sid: self._on_delete_one(s))
+            row_layout.addWidget(del_btn)
+
+            # Click row to select session
+            row.mousePressEvent = lambda ev, s=sid: self.session_selected.emit(s)
+
+            self._list_layout.insertWidget(i, row)
+
+    def _on_delete_one(self, session_id: str):
+        if self._history:
+            self._history.delete_session(session_id)
+            self.session_deleted.emit(session_id)
+            self.refresh()
+
+    def _on_delete_all(self):
+        if self._history:
+            self._history.delete_all_sessions()
+            self.all_deleted.emit()
+            self.refresh()
+
+
 class OnboardingPanel(QFrame):
     """Onboarding panel for first-time setup and settings configuration."""
 
@@ -1204,6 +1361,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.parent = self.FormToPyQtWidget(form)
         self.worker: AgentWorker | None = None
         self.history: MessageHistory | None = None
+        self._displayed_session_id: str | None = None
         self._is_processing = False
         self._current_message = None  # Track current blinking message
         self._current_turn = 0
@@ -1311,8 +1469,12 @@ class IDAChatForm(ida_kernwin.PluginForm):
         if plugin and plugin._shared_worker and plugin._shared_worker.isRunning():
             self.worker = plugin._shared_worker
             self._connect_worker_signals()
-            # Already connected — show ready message
-            self.chat_history.add_message("Agent reconnected!", is_user=False)
+            # Restore last session's messages into UI
+            if hasattr(self.worker, 'history') and self.worker.history:
+                self.history = self.worker.history
+                latest = self.history.get_current_session_id() or self.history.get_latest_session_id()
+                if latest:
+                    self._restore_session(latest)
             self.input_widget.setEnabled(True)
             return
 
@@ -1538,6 +1700,14 @@ class IDAChatForm(ida_kernwin.PluginForm):
             }}
         """
 
+        # History button
+        history_btn = QPushButton("☰")
+        history_btn.setFixedSize(24, 24)
+        history_btn.setToolTip("Session history")
+        history_btn.setStyleSheet(icon_btn_style)
+        history_btn.clicked.connect(self._toggle_history_panel)
+        header_layout.addWidget(history_btn)
+
         # Settings button (gear icon)
         settings_btn = QPushButton("⚙")
         settings_btn.setFixedSize(24, 24)
@@ -1576,6 +1746,15 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.onboarding_panel.onboarding_complete.connect(self._on_onboarding_complete)
         self.onboarding_panel.hide()  # Hidden by default, shown if not onboarded
         layout.addWidget(self.onboarding_panel)
+
+        # Session history panel (hidden by default)
+        self.session_history_panel = SessionHistoryPanel()
+        self.session_history_panel.back_requested.connect(self._hide_history_panel)
+        self.session_history_panel.session_selected.connect(self._on_history_session_selected)
+        self.session_history_panel.session_deleted.connect(self._on_history_session_deleted)
+        self.session_history_panel.all_deleted.connect(self._on_history_all_deleted)
+        self.session_history_panel.hide()
+        layout.addWidget(self.session_history_panel, stretch=1)
 
         # Progress timeline (hidden by default)
         self.progress_timeline = ProgressTimeline()
@@ -1641,6 +1820,10 @@ class IDAChatForm(ida_kernwin.PluginForm):
         # Add user message to chat
         self.chat_history.add_message(text, is_user=True)
 
+        # Track current session as displayed
+        if self.history:
+            self._displayed_session_id = self.history.get_current_session_id()
+
         # Send to agent
         self.worker.send_message(text)
 
@@ -1693,6 +1876,97 @@ class IDAChatForm(ida_kernwin.PluginForm):
         self.input_widget.setEnabled(True)
         self.input_widget.setFocus()
         self._update_status_bar()
+
+    def _toggle_history_panel(self):
+        """Toggle session history panel visibility."""
+        if self.session_history_panel.isVisible():
+            self._hide_history_panel()
+        else:
+            self._show_history_panel()
+
+    def _show_history_panel(self):
+        """Show the session history panel."""
+        if hasattr(self, 'history') and self.history:
+            self.session_history_panel.set_history(self.history)
+            self.session_history_panel.refresh()
+        self.chat_history.hide()
+        self.input_container.hide()
+        self.progress_timeline.hide()
+        self.session_history_panel.show()
+
+    def _hide_history_panel(self):
+        """Hide the session history panel, show chat."""
+        self.session_history_panel.hide()
+        self.chat_history.show()
+        self.input_container.show()
+
+    def _on_history_session_selected(self, session_id: str):
+        """User selected a historical session to view."""
+        self._hide_history_panel()
+        self._restore_session(session_id)
+
+    def _on_history_session_deleted(self, session_id: str):
+        """A session was deleted — if it's the current one, start fresh."""
+        if self._displayed_session_id == session_id:
+            self._start_fresh_chat()
+
+    def _on_history_all_deleted(self):
+        """All sessions deleted — start fresh."""
+        self._start_fresh_chat()
+
+    def _start_fresh_chat(self):
+        """Clear UI and start a new session."""
+        self._displayed_session_id = None
+        self.chat_history.clear_history()
+        self._total_cost = 0.0
+        self._script_count = 0
+        self._message_count = 0
+        self.progress_timeline.hide_timeline()
+        if self.worker:
+            self.worker.request_new_session()
+        self.chat_history.add_message("Ready for new conversation.", is_user=False)
+        self.input_widget.setEnabled(True)
+        self._update_status_bar()
+
+    def _restore_session(self, session_id: str):
+        """Restore a session's messages into the chat UI."""
+        if not hasattr(self, 'history') or not self.history:
+            return
+
+        messages = self.history.load_session(session_id)
+        if not messages:
+            return
+
+        self._displayed_session_id = session_id
+
+        self.chat_history.clear_history()
+        self._message_count = 0
+        self._total_cost = 0.0
+        self._script_count = 0
+
+        for entry in messages:
+            entry_type = entry.get("type")
+            msg = entry.get("message", {})
+            content_list = msg.get("content", [])
+
+            if entry_type == "user":
+                for item in (content_list if isinstance(content_list, list) else []):
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        self.chat_history.add_message(item["text"], is_user=True)
+                        self._message_count += 1
+            elif entry_type == "assistant":
+                for item in (content_list if isinstance(content_list, list) else []):
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            self.chat_history.add_message(item["text"], is_user=False)
+                            self._message_count += 1
+                        elif item.get("type") == "tool_use":
+                            name = item.get("name", "tool")
+                            self.chat_history.add_message(
+                                f"Tool: {name}", is_user=False, msg_type=MessageType.TOOL_USE)
+
+        self._update_status_bar()
+        self.chat_history.scroll_to_bottom()
 
     def OnClose(self, form):
         """Called when the widget is closed."""
