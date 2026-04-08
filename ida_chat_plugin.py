@@ -1203,6 +1203,7 @@ class IDAChatForm(ida_kernwin.PluginForm):
         """Called when the widget is created."""
         self.parent = self.FormToPyQtWidget(form)
         self.worker: AgentWorker | None = None
+        self.history: MessageHistory | None = None
         self._is_processing = False
         self._current_message = None  # Track current blinking message
         self._current_turn = 0
@@ -1254,8 +1255,67 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
         return execute_on_main_thread
 
+    def _connect_worker_signals(self):
+        """Connect worker signals to this form's slots."""
+        # Disconnect any stale connections first to prevent duplicate signals
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for sig_name in ('connection_ready', 'connection_error', 'turn_start',
+                             'thinking', 'thinking_done', 'tool_use', 'text',
+                             'script_code', 'script_output', 'error', 'result', 'finished'):
+                sig = getattr(self.worker.signals, sig_name, None)
+                if sig:
+                    try:
+                        sig.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+        self.worker.signals.connection_ready.connect(self._on_connection_ready)
+        self.worker.signals.connection_error.connect(self._on_connection_error)
+        self.worker.signals.turn_start.connect(self._on_turn_start)
+        self.worker.signals.thinking.connect(self._on_thinking)
+        self.worker.signals.thinking_done.connect(self._on_thinking_done)
+        self.worker.signals.tool_use.connect(self._on_tool_use)
+        self.worker.signals.text.connect(self._on_text)
+        self.worker.signals.script_code.connect(self._on_script_code)
+        self.worker.signals.script_output.connect(self._on_script_output)
+        self.worker.signals.error.connect(self._on_error)
+        self.worker.signals.result.connect(self._on_result)
+        self.worker.signals.finished.connect(self._on_finished)
+
+    def _disconnect_worker_signals(self):
+        """Disconnect worker signals from this form's slots."""
+        if not self.worker:
+            return
+        try:
+            self.worker.signals.connection_ready.disconnect(self._on_connection_ready)
+            self.worker.signals.connection_error.disconnect(self._on_connection_error)
+            self.worker.signals.turn_start.disconnect(self._on_turn_start)
+            self.worker.signals.thinking.disconnect(self._on_thinking)
+            self.worker.signals.thinking_done.disconnect(self._on_thinking_done)
+            self.worker.signals.tool_use.disconnect(self._on_tool_use)
+            self.worker.signals.text.disconnect(self._on_text)
+            self.worker.signals.script_code.disconnect(self._on_script_code)
+            self.worker.signals.script_output.disconnect(self._on_script_output)
+            self.worker.signals.error.disconnect(self._on_error)
+            self.worker.signals.result.disconnect(self._on_result)
+            self.worker.signals.finished.disconnect(self._on_finished)
+        except (TypeError, RuntimeError):
+            pass  # Signals already disconnected
+
     def _init_agent(self):
-        """Initialize the agent worker."""
+        """Initialize the agent worker, reusing existing connection if available."""
+        plugin = getattr(self, '_plugin', None)
+
+        # Reuse existing worker from plugin if still running
+        if plugin and plugin._shared_worker and plugin._shared_worker.isRunning():
+            self.worker = plugin._shared_worker
+            self._connect_worker_signals()
+            # Already connected — show ready message
+            self.chat_history.add_message("Agent reconnected!", is_user=False)
+            self.input_widget.setEnabled(True)
+            return
+
         try:
             db = Database.open()
             script_executor = self._create_script_executor(db)
@@ -1264,20 +1324,11 @@ class IDAChatForm(ida_kernwin.PluginForm):
             self.history = MessageHistory(db.path)
 
             self.worker = AgentWorker(db, script_executor, self.history)
+            self._connect_worker_signals()
 
-            # Connect signals
-            self.worker.signals.connection_ready.connect(self._on_connection_ready)
-            self.worker.signals.connection_error.connect(self._on_connection_error)
-            self.worker.signals.turn_start.connect(self._on_turn_start)
-            self.worker.signals.thinking.connect(self._on_thinking)
-            self.worker.signals.thinking_done.connect(self._on_thinking_done)
-            self.worker.signals.tool_use.connect(self._on_tool_use)
-            self.worker.signals.text.connect(self._on_text)
-            self.worker.signals.script_code.connect(self._on_script_code)
-            self.worker.signals.script_output.connect(self._on_script_output)
-            self.worker.signals.error.connect(self._on_error)
-            self.worker.signals.result.connect(self._on_result)
-            self.worker.signals.finished.connect(self._on_finished)
+            # Save to plugin for reuse
+            if plugin:
+                plugin._shared_worker = self.worker
 
             # Start connection
             self.worker.request_connect()
@@ -1645,10 +1696,9 @@ class IDAChatForm(ida_kernwin.PluginForm):
 
     def OnClose(self, form):
         """Called when the widget is closed."""
-        if self.worker:
-            self.worker.request_disconnect()
-            self.worker.wait(5000)  # Wait up to 5 seconds for clean shutdown
-            self.worker = None
+        # Disconnect signals but keep worker alive for reuse
+        self._disconnect_worker_signals()
+        self.worker = None
 
 
 class ToggleWidgetHandler(ida_kernwin.action_handler_t):
@@ -1679,6 +1729,7 @@ class IDAChatPlugin(ida_idaapi.plugin_t):
     def init(self):
         """Initialize the plugin."""
         self.form = None
+        self._shared_worker: AgentWorker | None = None
 
         # Register toggle action
         action_desc = ida_kernwin.action_desc_t(
@@ -1708,10 +1759,11 @@ class IDAChatPlugin(ida_idaapi.plugin_t):
         widget = ida_kernwin.find_widget(WIDGET_TITLE)
 
         if widget:
+            # Just hide — keep worker alive
             ida_kernwin.close_widget(widget, 0)
-            self.form = None
         else:
             self.form = IDAChatForm()
+            self.form._plugin = self  # back-reference for shared worker
             self.form.Show(
                 WIDGET_TITLE,
                 options=(
@@ -1733,6 +1785,12 @@ class IDAChatPlugin(ida_idaapi.plugin_t):
 
     def term(self):
         """Clean up when plugin is unloaded."""
+        # Disconnect the shared worker when IDA exits
+        if self._shared_worker:
+            self._shared_worker.request_disconnect()
+            self._shared_worker.wait(5000)
+            self._shared_worker = None
+
         widget = ida_kernwin.find_widget(WIDGET_TITLE)
         if widget:
             ida_kernwin.close_widget(widget, 0)
