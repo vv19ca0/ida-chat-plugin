@@ -290,6 +290,7 @@ class IDAChatCore:
         self.max_turns = max_turns
         self.history = history
         self.client: ClaudeSDKClient | None = None
+        self._prompt_tmp = None
         self._cancelled = False
         # Use injected executor or default to direct execution
         self._execute_script = script_executor or self._default_execute_script
@@ -305,15 +306,24 @@ class IDAChatCore:
         logger.info("Connecting to Claude Agent SDK")
         logger.info(f"CWD: {PROJECT_DIR}")
 
+        # Write system prompt to a temp file to avoid Windows 32767-char cmdline limit
+        prompt_content = _load_system_prompt()
+        self._prompt_tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        self._prompt_tmp.write(prompt_content)
+        self._prompt_tmp.flush()
+        self._prompt_tmp.close()
+        prompt_file = self._prompt_tmp.name
+
         options = ClaudeAgentOptions(
             cwd=str(PROJECT_DIR),
             setting_sources=["project"],
             allowed_tools=["Read", "Glob", "Grep", "Task"],
             permission_mode="bypassPermissions",
             system_prompt={
-                "type": "preset",
-                "preset": "claude_code",
-                "append": _load_system_prompt(),
+                "type": "file",
+                "path": prompt_file,
             },
             hooks={
                 'PreToolUse': [
@@ -331,6 +341,12 @@ class IDAChatCore:
         if self.client:
             await self.client.disconnect()
             self.client = None
+        if self._prompt_tmp is not None:
+            try:
+                os.unlink(self._prompt_tmp.name)
+            except OSError:
+                pass
+            self._prompt_tmp = None
 
     def _default_execute_script(self, code: str) -> str:
         """Default script executor - direct execution.
