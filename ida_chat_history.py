@@ -393,9 +393,9 @@ class MessageHistory:
         for session_file in sorted(self.session_dir.glob("*.jsonl"), reverse=True):
             session_id = session_file.stem
 
-            # Read first user message and count total messages
+            # Read first user message, last timestamp, and count total messages
             first_user_message = None
-            first_timestamp = None
+            last_timestamp = None
             message_count = 0
 
             with open(session_file, "r", encoding="utf-8") as f:
@@ -407,8 +407,9 @@ class MessageHistory:
                         entry = json.loads(line)
                         message_count += 1
 
-                        if first_timestamp is None:
-                            first_timestamp = entry.get("timestamp")
+                        ts = entry.get("timestamp")
+                        if ts:
+                            last_timestamp = ts
 
                         if first_user_message is None and entry.get("type") == "user":
                             msg = entry.get("message", {})
@@ -426,10 +427,12 @@ class MessageHistory:
             sessions.append({
                 "id": session_id,
                 "first_message": first_user_message or "(empty)",
-                "timestamp": first_timestamp,
+                "timestamp": last_timestamp,
                 "message_count": message_count,
             })
 
+        # Sort by last message timestamp, most recent first
+        sessions.sort(key=lambda s: s.get("timestamp") or "", reverse=True)
         return sessions
 
     def get_current_session_id(self) -> str | None:

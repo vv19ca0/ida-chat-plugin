@@ -1021,7 +1021,15 @@ class SessionHistoryPanel(QFrame):
             summary.setStyleSheet(f"QLabel {{ color: {colors['window_text']}; font-size: 12px; }}")
             info.addWidget(summary)
 
-            ts = sess.get("timestamp", "")[:19].replace("T", " ")
+            # Convert UTC timestamp to local timezone
+            ts_raw = sess.get("timestamp", "")
+            try:
+                from datetime import datetime, timezone
+                utc_dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                local_dt = utc_dt.astimezone()
+                ts = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, AttributeError):
+                ts = ts_raw[:19].replace("T", " ")
             meta = QLabel(f"{ts}  |  {sess['message_count']} messages")
             meta.setStyleSheet(f"QLabel {{ color: {colors['mid']}; font-size: 10px; }}")
             info.addWidget(meta)
