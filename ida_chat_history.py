@@ -390,6 +390,7 @@ class MessageHistory:
             return []
 
         sessions = []
+        titles = self._load_titles()
         for session_file in sorted(self.session_dir.glob("*.jsonl"), reverse=True):
             session_id = session_file.stem
 
@@ -426,6 +427,7 @@ class MessageHistory:
 
             sessions.append({
                 "id": session_id,
+                "title": titles.get(session_id),
                 "first_message": first_user_message or "(empty)",
                 "timestamp": last_timestamp,
                 "message_count": message_count,
@@ -451,6 +453,7 @@ class MessageHistory:
         session_file = self.session_dir / f"{session_id}.jsonl"
         if session_file.exists():
             session_file.unlink()
+            self.remove_session_title(session_id)
             # Clear current session if it was the deleted one
             if self.session_id == session_id:
                 self.session_id = None
@@ -471,6 +474,10 @@ class MessageHistory:
         for session_file in self.session_dir.glob("*.jsonl"):
             session_file.unlink()
             count += 1
+        # Clear titles file
+        tf = self._titles_file()
+        if tf.exists():
+            tf.unlink()
         self.session_id = None
         self.session_file = None
         self._parent_uuid = None
@@ -486,6 +493,44 @@ class MessageHistory:
             return None
         files = sorted(self.session_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
         return files[0].stem if files else None
+
+    def _titles_file(self) -> Path:
+        """Path to the session titles JSON file."""
+        return self.session_dir / "titles.json"
+
+    def _load_titles(self) -> dict[str, str]:
+        """Load custom session titles."""
+        tf = self._titles_file()
+        if tf.exists():
+            try:
+                return json.loads(tf.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_titles(self, titles: dict[str, str]) -> None:
+        """Save custom session titles."""
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self._titles_file().write_text(
+            json.dumps(titles, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def get_session_title(self, session_id: str) -> str | None:
+        """Get the custom title for a session, or None if not set."""
+        return self._load_titles().get(session_id)
+
+    def set_session_title(self, session_id: str, title: str) -> None:
+        """Set a custom title for a session."""
+        titles = self._load_titles()
+        titles[session_id] = title
+        self._save_titles(titles)
+
+    def remove_session_title(self, session_id: str) -> None:
+        """Remove the custom title for a session."""
+        titles = self._load_titles()
+        if session_id in titles:
+            del titles[session_id]
+            self._save_titles(titles)
 
     def get_all_user_messages(self) -> list[str]:
         """Get all user messages from all sessions for this binary.

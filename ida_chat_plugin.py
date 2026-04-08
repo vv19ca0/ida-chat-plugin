@@ -916,6 +916,7 @@ class SessionHistoryPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._history: MessageHistory | None = None
+        self._editing = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1016,7 +1017,8 @@ class SessionHistoryPanel(QFrame):
             # Info column
             info = QVBoxLayout()
             info.setSpacing(2)
-            summary = QLabel(sess["first_message"])
+            display_text = sess.get("title") or sess["first_message"]
+            summary = QLabel(display_text)
             summary.setWordWrap(True)
             summary.setStyleSheet(f"QLabel {{ color: {colors['window_text']}; font-size: 12px; }}")
             info.addWidget(summary)
@@ -1035,6 +1037,24 @@ class SessionHistoryPanel(QFrame):
             info.addWidget(meta)
             row_layout.addLayout(info, 1)
 
+            sid = sess["id"]
+
+            # Edit title button
+            edit_btn = QPushButton("✎")
+            edit_btn.setFixedSize(20, 20)
+            edit_btn.setToolTip("Edit session title")
+            edit_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {colors['mid']};
+                    border: none;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{ color: {colors['window_text']}; }}
+            """)
+            edit_btn.clicked.connect(lambda checked=False, s=sid, lbl=summary, lay=info: self._on_edit_title(s, lbl, lay))
+            row_layout.addWidget(edit_btn)
+
             # Delete button
             del_btn = QPushButton("x")
             del_btn.setFixedSize(20, 20)
@@ -1048,14 +1068,54 @@ class SessionHistoryPanel(QFrame):
                 }}
                 QPushButton:hover {{ color: #dc2626; }}
             """)
-            sid = sess["id"]
             del_btn.clicked.connect(lambda checked=False, s=sid: self._on_delete_one(s))
             row_layout.addWidget(del_btn)
 
             # Click row to select session
-            row.mousePressEvent = lambda ev, s=sid: self.session_selected.emit(s)
+            row.mousePressEvent = lambda ev, s=sid: (not self._editing and self.session_selected.emit(s))
 
             self._list_layout.insertWidget(i, row)
+
+    def _on_edit_title(self, session_id: str, label: QLabel, info_layout: QVBoxLayout):
+        """Replace the summary label with an inline editor."""
+        edit = QLineEdit(label.text())
+        colors = get_ida_colors()
+        edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {colors['base']};
+                color: {colors['window_text']};
+                border: 1px solid {colors['highlight']};
+                border-radius: 3px;
+                padding: 2px 4px;
+                font-size: 12px;
+            }}
+        """)
+        edit.selectAll()
+        self._editing = True
+
+        def finish_edit():
+            if not self._editing:
+                return
+            self._editing = False
+            new_title = edit.text().strip()
+            if new_title and self._history:
+                self._history.set_session_title(session_id, new_title)
+                label.setText(new_title)
+            elif not new_title and self._history:
+                self._history.remove_session_title(session_id)
+                self.refresh()
+                return
+            edit.hide()
+            edit.deleteLater()
+            label.show()
+
+        edit.returnPressed.connect(finish_edit)
+        edit.editingFinished.connect(finish_edit)
+
+        # Insert edit widget and hide label
+        info_layout.insertWidget(0, edit)
+        label.hide()
+        edit.setFocus()
 
     def _on_delete_one(self, session_id: str):
         if self._history:
