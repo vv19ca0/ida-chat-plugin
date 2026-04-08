@@ -318,7 +318,7 @@ class IDAChatCore:
 
         options = ClaudeAgentOptions(
             cwd=str(PROJECT_DIR),
-            setting_sources=["project"],
+            setting_sources=["user", "project"],
             allowed_tools=["Read", "Glob", "Grep", "Task"],
             permission_mode="bypassPermissions",
             system_prompt={
