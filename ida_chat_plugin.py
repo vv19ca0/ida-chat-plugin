@@ -179,7 +179,7 @@ class CollapsibleSection(QFrame):
         self.content_label.setTextFormat(Qt.RichText)
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(
-            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+            Qt.TextInteractionFlag(Qt.TextSelectableByMouse.value | Qt.TextSelectableByKeyboard.value)
         )
         self.content_label.setStyleSheet(f"""
             QLabel {{
@@ -389,7 +389,7 @@ class ChatMessage(QFrame):
             self.message_widget = QLabel(text)
             self.message_widget.setWordWrap(True)
             self.message_widget.setTextInteractionFlags(
-                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+                Qt.TextInteractionFlag(Qt.TextSelectableByMouse.value | Qt.TextSelectableByKeyboard.value)
             )
             self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             layout.addStretch()
@@ -406,7 +406,7 @@ class ChatMessage(QFrame):
             # Status indicator for assistant messages (small dot)
             self._status_indicator = QLabel("●")
             self._status_indicator.setFixedWidth(16)
-            self._status_indicator.setAlignment(Qt.AlignCenter | Qt.AlignTop)
+            self._status_indicator.setAlignment(Qt.AlignmentFlag(Qt.AlignCenter.value | Qt.AlignTop.value))
             self._update_indicator_style()
             layout.addWidget(self._status_indicator)
 
@@ -415,7 +415,7 @@ class ChatMessage(QFrame):
             self.message_widget.setTextFormat(Qt.RichText)
             self.message_widget.setWordWrap(True)
             self.message_widget.setTextInteractionFlags(
-                Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
+                Qt.TextInteractionFlag(Qt.TextSelectableByMouse.value | Qt.TextSelectableByKeyboard.value | Qt.LinksAccessibleByMouse.value)
             )
             self.message_widget.setOpenExternalLinks(True)
             self.message_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
